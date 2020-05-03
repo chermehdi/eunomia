@@ -96,6 +96,19 @@ func TestCheckCorrupt_OneDataElement(t *testing.T) {
 	assert.Equal(t, head, tail)
 }
 
+func TestFileQueue_Push(t *testing.T) {
+	queue, err := NewFileQueue("some-queue")
+	defer queue.Delete()
+
+	assert.NoError(t, err)
+	assert.Equal(t, int64(0), queue.Size())
+
+	queue.Push(&MockData{value: 12})
+
+	assert.Equal(t, int64(1), queue.Size())
+}
+
+// tests Utilities
 type MockData struct {
 	value int32
 }

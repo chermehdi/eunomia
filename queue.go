@@ -21,6 +21,8 @@ type Queue interface {
 	Poll() (QueueElement, error)
 
 	Size() int64
+
+	Delete() error
 }
 
 // Types that we can push onto the queue should adhere to the following contract:
@@ -38,9 +40,60 @@ type QueueElement interface {
 	Serializable
 }
 
+// A Flat file-based implementation of the Queue interface.
+// TODO(chermehdi): add docs and examples.
 type FileQueue struct {
 	filePath string
 	writer   *QueueProtocolWriter
+}
+
+// Creates or restores a new flat-file queue from the given file path.
+// If the file is corrupt (i.e it already exists and it has an unexpected format) this will return a corruption error.
+func NewFileQueue(filePath string) (Queue, error) {
+	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_RDWR, 0755) // maybe parametrize the default permissions
+	if err != nil {
+		return nil, err
+	}
+	protoWriter, err := NewQueueWriter(file)
+	if err != nil {
+		return nil, err
+	}
+	return &FileQueue{
+		filePath: filePath,
+		writer:   protoWriter,
+	}, nil
+}
+
+func (f *FileQueue) Push(element QueueElement) {
+	elementBuffer := element.Write()
+	elementLength := int64(len(elementBuffer))
+	insertPosition := f.writer.tail.offset + f.writer.tail.length
+	elementPtr := &elementPtr{
+		offset: insertPosition,
+		length: elementLength,
+		index:  f.writer.tail.index + 1,
+	}
+	err := writeLong(f.writer.backingFile, insertPosition, elementLength)
+	if err != nil {
+		panic(err)
+	}
+	_, err = writeChunk(f.writer.backingFile, insertPosition+8, elementBuffer)
+	if err != nil {
+		panic(err)
+	}
+	f.writer.updateTail(elementPtr)
+}
+
+func (f *FileQueue) Poll() (QueueElement, error) {
+	panic("implement me")
+}
+
+func (f *FileQueue) Size() int64 {
+	return f.writer.tail.index - f.writer.head.index
+}
+
+func (f *FileQueue) Delete() error {
+	return os.Remove(f.filePath)
 }
 
 // an element dictating how to write elements
@@ -61,6 +114,14 @@ type QueueProtocolWriter struct {
 	tail        *elementPtr
 }
 
+func (w *QueueProtocolWriter) updateTail(ptr *elementPtr) {
+	if w.head.index == 0 {
+		// First time
+		w.head.length = ptr.length
+	}
+	w.tail = ptr
+}
+
 // Pointer to some data element in the file
 // Each element is identified by it's start position and it's length (in bytes).
 // The elements are written [elementLength,elementData] and the offset points to the first
@@ -68,6 +129,7 @@ type QueueProtocolWriter struct {
 type elementPtr struct {
 	offset int64
 	length int64
+	index  int64
 }
 
 func NewQueueWriter(backingFile *os.File) (*QueueProtocolWriter, error) {
@@ -88,11 +150,9 @@ func NewQueueWriter(backingFile *os.File) (*QueueProtocolWriter, error) {
 		head = &elementPtr{
 			offset: 12,
 			length: 0,
+			index:  0,
 		}
-		tail = &elementPtr{
-			offset: 12,
-			length: 0,
-		}
+		tail = head
 	}
 	if err != nil {
 		return nil, err
@@ -165,6 +225,14 @@ func readChunk(file *os.File, offset, length int64) ([]byte, error) {
 	return buffer, nil
 }
 
+func writeChunk(file *os.File, offset int64, data []byte) (int, error) {
+	written, err := file.WriteAt(data, offset)
+	if err != nil {
+		return -1, err
+	}
+	return written, nil
+}
+
 // Check if the given file is corrupt, i.e does not correspond to the protocol contract
 // If the file is valid, return pointers to both head element and tail element.
 // Head and Tail pointers can be the same.
@@ -202,11 +270,9 @@ func checkCorrupt(file *os.File) (head, tail *elementPtr, corruptErr error) {
 		head = &elementPtr{
 			offset: 12,
 			length: 0,
+			index:  0,
 		}
-		tail = &elementPtr{
-			offset: 12,
-			length: 0,
-		}
+		tail = head
 		return
 	}
 	currOffset := int64(12)
@@ -225,6 +291,7 @@ func checkCorrupt(file *os.File) (head, tail *elementPtr, corruptErr error) {
 		tail = &elementPtr{
 			offset: currOffset,
 			length: dataLength,
+			index:  i,
 		}
 		currOffset += 8
 		_, err = readChunk(file, currOffset, dataLength)
