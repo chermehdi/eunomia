@@ -28,7 +28,6 @@ type Queue interface {
 //    (Note: This implies a temporary buffer is allocated this should be taken care of in the next iteration)
 //
 //   Read: An element should be able to restore it's state from a given io.Reader
-
 type Serializable interface {
 	Write() []byte
 
@@ -47,10 +46,12 @@ type FileQueue struct {
 // an element dictating how to write elements
 // Protocol description:
 //
-// version              4 byte
-// elementCount         8 bytes
-// firstElementLength   8 bytes
-// firstElement         firstElementLength bytes
+// version                        4 byte
+// created_at timestamp           8 bytes
+// last_updated_at timestamp      8 bytes
+// elementCount                   8 bytes
+// firstElementLength             8 bytes
+// firstElement                   firstElementLength bytes
 // ..
 // lastElementLength    8 bytes
 // lastElement          lastElementLength bytes
@@ -116,6 +117,8 @@ func writeInt(file *os.File, offset int64, value int32) error {
 	return nil
 }
 
+// Write an int64 value in the given offset of the file.
+// If the value cannot be written to the file an error is returned.
 func writeLong(file *os.File, offset int64, value int64) error {
 	buffer[0] = byte(value >> 56)
 	buffer[1] = byte(value >> 48)
