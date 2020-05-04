@@ -1,6 +1,7 @@
 package eunomia
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"os"
@@ -8,17 +9,22 @@ import (
 
 var buffer = make([]byte, 64)
 
-var NewFileError = errors.New("file has never been initialized")
-var CorruptVersion = errors.New("invalid version in the file header")
-var UnexpectedNumberOfWrittenBytes = errors.New("the number of written bytes and the number of expected bytes to be written is different")
+var (
+	NewFileError                        = errors.New("file has never been initialized")
+	CorruptVersionError                 = errors.New("invalid version in the file header")
+	UnexpectedNumberOfWrittenBytesError = errors.New("the number of written bytes and the number of expected bytes to be written is different")
+	EmptyQueueError                     = errors.New("cannot peek or poll from an empty queue")
+)
 
-// Magic number to act as the version
+// Magic number to act as the version, for backward compatibility guarantees.
 const MagicVersionNumber int32 = 0x23
 
 type Queue interface {
-	Push(element QueueElement)
+	Push(element interface{}) error
 
-	Poll() (QueueElement, error)
+	Poll() (interface{}, error)
+
+	Peek() (interface{}, error)
 
 	Size() int64
 
@@ -30,26 +36,23 @@ type Queue interface {
 //    (Note: This implies a temporary buffer is allocated this should be taken care of in the next iteration)
 //
 //   Read: An element should be able to restore it's state from a given io.Reader
-type Serializable interface {
-	Write() []byte
+type Serializer interface {
+	Write(interface{}) []byte
 
-	Read(reader io.Reader)
-}
-
-type QueueElement interface {
-	Serializable
+	Read(reader io.Reader) interface{}
 }
 
 // A Flat file-based implementation of the Queue interface.
 // TODO(chermehdi): add docs and examples.
 type FileQueue struct {
-	filePath string
-	writer   *QueueProtocolWriter
+	filePath   string
+	writer     *QueueProtocolWriter
+	serializer Serializer
 }
 
 // Creates or restores a new flat-file queue from the given file path.
 // If the file is corrupt (i.e it already exists and it has an unexpected format) this will return a corruption error.
-func NewFileQueue(filePath string) (Queue, error) {
+func NewFileQueue(filePath string, serializer Serializer) (Queue, error) {
 	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_RDWR, 0755) // maybe parametrize the default permissions
 	if err != nil {
 		return nil, err
@@ -59,37 +62,58 @@ func NewFileQueue(filePath string) (Queue, error) {
 		return nil, err
 	}
 	return &FileQueue{
-		filePath: filePath,
-		writer:   protoWriter,
+		filePath:   filePath,
+		writer:     protoWriter,
+		serializer: serializer,
 	}, nil
 }
 
-func (f *FileQueue) Push(element QueueElement) {
-	elementBuffer := element.Write()
-	elementLength := int64(len(elementBuffer))
-	insertPosition := f.writer.tail.offset + f.writer.tail.length
-	elementPtr := &elementPtr{
-		offset: insertPosition,
-		length: elementLength,
-		index:  f.writer.tail.index + 1,
+// There two cases when pushing to the queue
+// 1- The queue is empty, this is the first element the head and tail are pointing to the same offset
+//    And this will stay the after the call to push, we only are going to update the lengths
+// 2- The queue already contains some 1 or more elements.
+func (f *FileQueue) Push(element interface{}) error {
+	data := f.serializer.Write(element)
+	header := f.writer.header
+	dataLength := int64(len(data))
+	if f.Size() == 0 {
+		header.tail.length = dataLength
+		header.head.length = dataLength
+	} else {
+		header.tail.offset = header.tail.offset + header.tail.length + 8
+		header.tail.length = dataLength
 	}
-	err := writeLong(f.writer.backingFile, insertPosition, elementLength)
-	if err != nil {
-		panic(err)
+	if err := WriteLong(f.writer.backingFile, header.tail.offset, dataLength); err != nil {
+		return err
 	}
-	_, err = writeChunk(f.writer.backingFile, insertPosition+8, elementBuffer)
-	if err != nil {
-		panic(err)
+	if _, err := WriteChunk(f.writer.backingFile, header.tail.offset+8, data); err != nil {
+		return err
 	}
-	f.writer.updateTail(elementPtr)
+	header.elementCount++
+	if err := writeHeader(f.writer.backingFile, header); err != nil {
+		return err
+	}
+	return nil
 }
 
-func (f *FileQueue) Poll() (QueueElement, error) {
+func (f *FileQueue) Poll() (interface{}, error) {
 	panic("implement me")
 }
 
+func (f *FileQueue) Peek() (interface{}, error) {
+	if f.Size() == 0 {
+		return nil, EmptyQueueError
+	}
+	head := f.writer.header.head
+	data, err := ReadChunk(f.writer.backingFile, head.offset+8, head.length)
+	if err != nil {
+		return nil, err
+	}
+	return f.serializer.Read(bytes.NewReader(data)), nil
+}
+
 func (f *FileQueue) Size() int64 {
-	return f.writer.tail.index - f.writer.head.index
+	return f.writer.header.elementCount
 }
 
 func (f *FileQueue) Delete() error {
@@ -110,16 +134,15 @@ func (f *FileQueue) Delete() error {
 // lastElement          lastElementLength bytes
 type QueueProtocolWriter struct {
 	backingFile *os.File
-	head        *elementPtr
-	tail        *elementPtr
+	header      *header
 }
 
 func (w *QueueProtocolWriter) updateTail(ptr *elementPtr) {
-	if w.head.index == 0 {
+	if w.header.head.index == 0 {
 		// First time
-		w.head.length = ptr.length
+		w.header.head.length = ptr.length
 	}
-	w.tail = ptr
+	w.header.tail = ptr
 }
 
 // Pointer to some data element in the file
@@ -132,176 +155,118 @@ type elementPtr struct {
 	index  int64
 }
 
+// The header structure of the queue file.
+type header struct {
+	elementCount int64
+	version      int32
+	flags        int32
+	head         *elementPtr
+	tail         *elementPtr
+}
+
 func NewQueueWriter(backingFile *os.File) (*QueueProtocolWriter, error) {
 	writer := &QueueProtocolWriter{
 		backingFile: backingFile,
 	}
-	head, tail, err := checkCorrupt(backingFile)
-
-	if err == NewFileError {
-		err = writeInt(backingFile, 0, MagicVersionNumber)
+	if !fileExist(backingFile) {
+		header, err := fillEmptyQueueFile(backingFile)
 		if err != nil {
 			return nil, err
 		}
-		err = writeLong(backingFile, int64(4), int64(0))
-		if err != nil {
-			return nil, err
-		}
-		head = &elementPtr{
-			offset: 12,
-			length: 0,
-			index:  0,
-		}
-		tail = head
+		writer.header = header
+		return writer, nil
 	}
+	header, err := checkCorrupt(backingFile)
 	if err != nil {
 		return nil, err
 	}
-	writer.head = head
-	writer.tail = tail
+	writer.header = header
 	return writer, nil
 }
 
-func writeInt(file *os.File, offset int64, value int32) error {
-	buffer[0] = byte(value >> 24)
-	buffer[1] = byte(value >> 16)
-	buffer[2] = byte(value >> 8)
-	buffer[3] = byte(value)
-	written, err := file.WriteAt(buffer[0:4], offset)
-	if err != nil {
-		return err
+// Fills the passed empty header by the default header parameters and returns the created header.
+// Any sort of error during the process is returned.
+func fillEmptyQueueFile(file *os.File) (*header, error) {
+	header := &header{
+		version:      MagicVersionNumber,
+		flags:        int32(0),
+		elementCount: int64(0),
+		head: &elementPtr{
+			offset: int64(32),
+			length: 0,
+		},
+		tail: &elementPtr{
+			offset: int64(32),
+			length: 0,
+		},
 	}
-	if written != 4 {
-		return UnexpectedNumberOfWrittenBytes
-	}
-	return nil
-}
-
-// Write an int64 value in the given offset of the file.
-// If the value cannot be written to the file an error is returned.
-func writeLong(file *os.File, offset int64, value int64) error {
-	buffer[0] = byte(value >> 56)
-	buffer[1] = byte(value >> 48)
-	buffer[2] = byte(value >> 40)
-	buffer[3] = byte(value >> 32)
-	buffer[4] = byte(value >> 24)
-	buffer[5] = byte(value >> 16)
-	buffer[6] = byte(value >> 8)
-	buffer[7] = byte(value)
-	written, err := file.WriteAt(buffer[0:8], offset)
-	if err != nil {
-		return err
-	}
-	if written != 8 {
-		return UnexpectedNumberOfWrittenBytes
-	}
-	return nil
-}
-
-func readInt(file *os.File, offset int64) (int32, error) {
-	buffer, err := readChunk(file, offset, 4)
-	if err != nil {
-		return -1, err
-	}
-	result := (int32(buffer[0]&0xff) << 24) + (int32(buffer[1]&0xff) << 16) + (int32(buffer[2]&0xff) << 8) + int32(buffer[3])
-	return result, nil
-}
-
-func readLong(file *os.File, offset int64) (int64, error) {
-	buffer, err := readChunk(file, offset, 8)
-	if err != nil {
-		return -1, err
-	}
-	result := (int64(buffer[0]&0xff) << 56) + (int64(buffer[1]&0xff) << 48) + (int64(buffer[2]&0xff) << 40) + (int64(buffer[3]) << 32) + (int64(buffer[4]) << 24) + (int64(buffer[5]) << 16) + (int64(buffer[6]) << 8) + (int64(buffer[7]))
-	return result, nil
-}
-
-func readChunk(file *os.File, offset, length int64) ([]byte, error) {
-	buffer := make([]byte, length)
-	_, err := file.ReadAt(buffer, offset)
+	err := writeHeader(file, header)
 	if err != nil {
 		return nil, err
 	}
-	return buffer, nil
-}
-
-func writeChunk(file *os.File, offset int64, data []byte) (int, error) {
-	written, err := file.WriteAt(data, offset)
-	if err != nil {
-		return -1, err
-	}
-	return written, nil
+	return header, nil
 }
 
 // Check if the given file is corrupt, i.e does not correspond to the protocol contract
 // If the file is valid, return pointers to both head element and tail element.
 // Head and Tail pointers can be the same.
-func checkCorrupt(file *os.File) (head, tail *elementPtr, corruptErr error) {
+func checkCorrupt(file *os.File) (*header, error) {
 	length, err := fileLength(file)
 	if err != nil {
-		corruptErr = err
-		return
+		return nil, err
 	}
 	if length == 0 {
-		corruptErr = NewFileError
-		return
+		return nil, err
 	}
 	_, err = file.Seek(0, io.SeekStart)
 	if err != nil {
-		corruptErr = err
-		return
+		return nil, err
 	}
-	version, err := readInt(file, 0)
+	header := &header{}
+	currentOffset := int64(0)
+	version, err := ReadInt(file, currentOffset)
+	currentOffset += 4
 	if err != nil {
-		corruptErr = err
-		return
+		return nil, err
 	}
 	if version != MagicVersionNumber {
-		corruptErr = CorruptVersion
-		return
+		return nil, CorruptVersionError
 	}
-	elementCount, err := readLong(file, 4)
+	header.version = version
+	// TODO(chermehdi): Use the flags
+	flags, err := ReadInt(file, currentOffset)
+	currentOffset += 4
 	if err != nil {
-		corruptErr = err
-		return
+		return nil, err
 	}
-	if elementCount == 0 {
-		// The queue is empty
-		head = &elementPtr{
-			offset: 12,
-			length: 0,
-			index:  0,
-		}
-		tail = head
-		return
+	header.flags = flags
+
+	elementCount, err := ReadLong(file, currentOffset)
+	currentOffset += 8
+	if err != nil {
+		return nil, err
 	}
-	currOffset := int64(12)
-	for i := int64(0); i < elementCount; i++ {
-		dataLength, err := readLong(file, currOffset)
-		if err != nil {
-			corruptErr = err
-			return
-		}
-		if i == 0 {
-			head = &elementPtr{
-				offset: currOffset,
-				length: dataLength,
-			}
-		}
-		tail = &elementPtr{
-			offset: currOffset,
-			length: dataLength,
-			index:  i,
-		}
-		currOffset += 8
-		_, err = readChunk(file, currOffset, dataLength)
-		if err != nil {
-			corruptErr = err
-			return
-		}
-		currOffset += dataLength
+	header.elementCount = elementCount
+
+	headOffset, err := ReadLong(file, currentOffset)
+	currentOffset += 8
+	if err != nil {
+		return nil, err
 	}
-	return
+	tailOffset, err := ReadLong(file, currentOffset)
+	currentOffset += 8
+	if err != nil {
+		return nil, err
+	}
+	header.head = &elementPtr{
+		offset: headOffset,
+		length: 0,
+	}
+	header.tail = &elementPtr{
+		offset: tailOffset,
+		length: 0,
+	}
+	return header, nil
 }
 
 func fileLength(file *os.File) (int64, error) {

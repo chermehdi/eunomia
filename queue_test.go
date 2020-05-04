@@ -14,8 +14,8 @@ func TestNewQueueWriter(t *testing.T) {
 
 	queueWriter, err := NewQueueWriter(queueFile)
 	assert.NoError(t, err)
-	assert.Equal(t, queueWriter.head.offset, queueWriter.tail.offset)
-	assert.Equal(t, queueWriter.head.length, queueWriter.tail.length)
+	assert.Equal(t, queueWriter.header.head.offset, queueWriter.header.tail.offset)
+	assert.Equal(t, queueWriter.header.head.length, queueWriter.header.tail.length)
 }
 
 func TestCheckCorrupt_WrongVersionNumber(t *testing.T) {
@@ -25,19 +25,22 @@ func TestCheckCorrupt_WrongVersionNumber(t *testing.T) {
 	_, err := queueFile.Write([]byte{1, 1, 1, 1})
 	assert.NoError(t, err)
 
-	_, _, err = checkCorrupt(queueFile)
+	_, err = checkCorrupt(queueFile)
 
-	assert.Equal(t, CorruptVersion, err)
+	assert.Equal(t, CorruptVersionError, err)
 }
 
 func TestCheckCorrupt_NoElementCount(t *testing.T) {
 	queueFile := createTestFile()
 	defer deleteFile(queueFile)
 
+	//version
 	_, err := queueFile.Write([]byte{0, 0, 0, 35})
+	// flags
+	_, err = queueFile.Write([]byte{0, 0, 0, 0})
 	assert.NoError(t, err)
 
-	_, _, err = checkCorrupt(queueFile)
+	_, err = checkCorrupt(queueFile)
 
 	assert.Error(t, err)
 }
@@ -46,16 +49,28 @@ func TestCheckCorrupt_ZeroElementCount(t *testing.T) {
 	queueFile := createTestFile()
 	defer deleteFile(queueFile)
 
-	_, err := queueFile.Write([]byte{0, 0, 0, 35})
-	_, err = queueFile.Write([]byte{0, 0, 0, 0, 0, 0, 0, 0})
+	header := &header{
+		elementCount: 0,
+		version:      MagicVersionNumber,
+		flags:        0,
+		head: &elementPtr{
+			offset: 64,
+			length: 0,
+		},
+		tail: &elementPtr{
+			offset: 64,
+			length: 0,
+		},
+	}
+	err := writeHeader(queueFile, header)
 	assert.NoError(t, err)
 
-	tail, head, err := checkCorrupt(queueFile)
+	header2, err := checkCorrupt(queueFile)
 
 	assert.NoError(t, err)
-
-	assert.NotNil(t, head)
-	assert.NotNil(t, tail)
+	assert.Equal(t, header.elementCount, header2.elementCount)
+	assert.NotNil(t, header.head)
+	assert.NotNil(t, header.tail)
 }
 
 func TestCheckCorrupt_OneDataElementNotMatchingDataLength(t *testing.T) {
@@ -64,40 +79,68 @@ func TestCheckCorrupt_OneDataElementNotMatchingDataLength(t *testing.T) {
 
 	_, err := queueFile.Write([]byte{0, 0, 0, 35})
 	_, err = queueFile.Write([]byte{0, 0, 0, 0, 0, 0, 0, 1})
-	mockData := &MockData{
+	mockData := MockData{
 		value: 14,
 	}
-	dataBuffer := mockData.Write()
+	dataBuffer := (&MockDataSerializer{}).Write(mockData)
 	// The size of the data is not the same as the actual data, which implies that this file is corrupt.
 	_, err = queueFile.Write(toBytes64(int64(len(dataBuffer)) + 1))
 	_, err = queueFile.Write(dataBuffer)
 	assert.NoError(t, err)
 
-	_, _, err = checkCorrupt(queueFile)
+	_, err = checkCorrupt(queueFile)
 	assert.Error(t, err)
 }
 
 func TestCheckCorrupt_OneDataElement(t *testing.T) {
 	queueFile := createTestFile()
 	defer deleteFile(queueFile)
-
-	_, err := queueFile.Write([]byte{0, 0, 0, 35})
-	_, err = queueFile.Write([]byte{0, 0, 0, 0, 0, 0, 0, 1})
-	mockData := &MockData{
+	mockData := MockData{
 		value: 14,
 	}
-	dataBuffer := mockData.Write()
-	_, err = queueFile.Write(toBytes64(int64(len(dataBuffer))))
-	_, err = queueFile.Write(dataBuffer)
+	dataBuffer := (&MockDataSerializer{}).Write(mockData)
+	header := &header{
+		elementCount: 1,
+		version:      MagicVersionNumber,
+		flags:        0,
+		head: &elementPtr{
+			offset: 32,
+			length: -1,
+		},
+		tail: &elementPtr{
+			offset: 32,
+			length: -1,
+		},
+	}
+	err := writeHeader(queueFile, header)
+	WriteLong(queueFile, header.tail.offset, int64(len(dataBuffer)))
+	WriteChunk(queueFile, header.tail.offset+8, dataBuffer)
+	header.head.length = int64(len(dataBuffer))
+	header.tail.length = int64(len(dataBuffer))
+	header2, err := checkCorrupt(queueFile)
 	assert.NoError(t, err)
+	assert.Equal(t, header2.head.offset, header.tail.offset)
+}
 
-	tail, head, err := checkCorrupt(queueFile)
+func TestFileQueue_Push2elements(t *testing.T) {
+	queue, err := NewFileQueue("some-queue", &MockDataSerializer{})
+	defer queue.Delete()
+
 	assert.NoError(t, err)
-	assert.Equal(t, head, tail)
+	assert.Equal(t, int64(0), queue.Size())
+
+	queue.Push(&MockData{value: 12})
+	queue.Push(&MockData{value: 13})
+
+	assert.Equal(t, int64(2), queue.Size())
+
+	fq := queue.(*FileQueue)
+	assert.Equal(t, int64(32), fq.writer.header.head.offset)
+	assert.Equal(t, int64(44), fq.writer.header.tail.offset)
 }
 
 func TestFileQueue_Push(t *testing.T) {
-	queue, err := NewFileQueue("some-queue")
+	queue, err := NewFileQueue("some-queue", &MockDataSerializer{})
 	defer queue.Delete()
 
 	assert.NoError(t, err)
@@ -108,21 +151,62 @@ func TestFileQueue_Push(t *testing.T) {
 	assert.Equal(t, int64(1), queue.Size())
 }
 
+func TestFileQueue_PeekEmptyQueue(t *testing.T) {
+	queue, err := NewFileQueue("some-queue", &MockDataSerializer{})
+	defer queue.Delete()
+
+	assert.NoError(t, err)
+
+	_, err = queue.Peek()
+	assert.Same(t, EmptyQueueError, err)
+}
+
+func TestFileQueue_PeekQueue(t *testing.T) {
+	queue, err := NewFileQueue("some-queue", &MockDataSerializer{})
+	defer queue.Delete()
+
+	assert.NoError(t, err)
+	mockData := MockData{123}
+
+	queue.Push(&mockData)
+
+	el, err := queue.Peek()
+
+	assert.NoError(t, err)
+	mockDataInstance := (el).(MockData)
+	assert.Equal(t, mockData.value, mockDataInstance.value)
+}
+
 // tests Utilities
 type MockData struct {
 	value int32
 }
 
-func (m *MockData) Write() []byte {
+type MockDataSerializer struct {
+}
+
+func (m *MockDataSerializer) Write(i interface{}) []byte {
 	var buffer bytes.Buffer
-	buffer.Write(toBytes(m.value))
+	data, ok := i.(MockData)
+	if !ok {
+		dataPtr, ok := i.(*MockData)
+		if !ok {
+			panic("Unexpected type")
+		}
+		buffer.Write(toBytes(dataPtr.value))
+		return buffer.Bytes()
+	}
+	buffer.Write(toBytes(data.value))
 	return buffer.Bytes()
 }
 
-func (m *MockData) Read(reader io.Reader) {
+func (m *MockDataSerializer) Read(reader io.Reader) interface{} {
 	result := make([]byte, 4)
 	_, _ = reader.Read(result)
-	m.value = (int32(result[0]&0xff) << 24) + (int32(result[1]&0xff) << 16) + (int32(result[2]&0xff) << 8) + (int32(result[0] & 0xff))
+	mockData := MockData{
+		value: (int32(result[0]&0xff) << 24) + (int32(result[1]&0xff) << 16) + (int32(result[2]&0xff) << 8) + (int32(result[3] & 0xff)),
+	}
+	return mockData
 }
 
 func toBytes64(value int64) []byte {
