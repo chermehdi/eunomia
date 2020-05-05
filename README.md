@@ -12,7 +12,7 @@ go get https://github.com/chermehdi/eunomia
 - This is the simplest possible example:
 
 ```go
-queue := eunomia.NewQueue("queue-name")
+queue := eunomia.NewQueue("queue-name", serializer)
 queue.Add(serializableStruct)
 queue.Add(serializableStruct)
 
@@ -26,9 +26,9 @@ queueLength := queue.Size() // 1
 queue.Delete() // dangerous, will delete the file
 ```
 
-- The only constraint on your data is that it should adhere to the `QueueElement` interface, which simply tells
-the queue implementation how to serialize your data from and to a byte stream.
-
+- Each queue is associated with 1 datatype, and should be provided a `Serializer` instance, an element that knows how
+to convert your data type to/from a `[]byte`.
+ 
 ## How Eunomia stores data?
 
 ### Serialisation format
