@@ -1,8 +1,11 @@
 package eunomia
 
-import "os"
+import (
+	"io"
+)
 
-func WriteInt(file *os.File, offset int64, value int32) error {
+// Write an int32 at the given offset.
+func WriteInt(file io.WriterAt, offset int64, value int32) error {
 	buffer[0] = byte(value >> 24)
 	buffer[1] = byte(value >> 16)
 	buffer[2] = byte(value >> 8)
@@ -19,7 +22,7 @@ func WriteInt(file *os.File, offset int64, value int32) error {
 
 // Write an int64 value in the given offset of the file.
 // If the value cannot be written to the file an error is returned.
-func WriteLong(file *os.File, offset int64, value int64) error {
+func WriteLong(file io.WriterAt, offset int64, value int64) error {
 	buffer[0] = byte(value >> 56)
 	buffer[1] = byte(value >> 48)
 	buffer[2] = byte(value >> 40)
@@ -38,7 +41,8 @@ func WriteLong(file *os.File, offset int64, value int64) error {
 	return nil
 }
 
-func ReadInt(file *os.File, offset int64) (int32, error) {
+// Read an int32 at the given offset
+func ReadInt(file io.ReaderAt, offset int64) (int32, error) {
 	buffer, err := ReadChunk(file, offset, 4)
 	if err != nil {
 		return -1, err
@@ -47,7 +51,8 @@ func ReadInt(file *os.File, offset int64) (int32, error) {
 	return result, nil
 }
 
-func ReadLong(file *os.File, offset int64) (int64, error) {
+// Read an int64 at the given offset
+func ReadLong(file io.ReaderAt, offset int64) (int64, error) {
 	buffer, err := ReadChunk(file, offset, 8)
 	if err != nil {
 		return -1, err
@@ -56,7 +61,8 @@ func ReadLong(file *os.File, offset int64) (int64, error) {
 	return result, nil
 }
 
-func ReadChunk(file *os.File, offset, length int64) ([]byte, error) {
+// Read a chunk of data starting at the given offset and ending at offset + length - 1.
+func ReadChunk(file io.ReaderAt, offset, length int64) ([]byte, error) {
 	buffer := make([]byte, length)
 	_, err := file.ReadAt(buffer, offset)
 	if err != nil {
@@ -65,7 +71,9 @@ func ReadChunk(file *os.File, offset, length int64) ([]byte, error) {
 	return buffer, nil
 }
 
-func WriteChunk(file *os.File, offset int64, data []byte) (int, error) {
+// Write the given chunk o data at the given offset.
+// If the data couldn't be written as a whole, an error is raised.
+func WriteChunk(file io.WriterAt, offset int64, data []byte) (int, error) {
 	written, err := file.WriteAt(data, offset)
 	if err != nil {
 		return -1, err
@@ -75,7 +83,7 @@ func WriteChunk(file *os.File, offset int64, data []byte) (int, error) {
 
 // Writes the passed header as specified by the protocol description to the
 // queue file. If an error occurs during writing and error is returned.
-func writeHeader(file *os.File, header *header) error {
+func writeHeader(file io.WriterAt, header *header) error {
 	currentOffset := int64(0)
 	err := WriteInt(file, currentOffset, header.version)
 	currentOffset += 4

@@ -18,6 +18,27 @@ func TestNewQueueWriter(t *testing.T) {
 	assert.Equal(t, queueWriter.header.head.length, queueWriter.header.tail.length)
 }
 
+func TestNewFileQueue_FromExistingValidFile(t *testing.T) {
+	queue, err := NewFileQueue("queue-file", &MockDataSerializer{})
+	defer queue.Delete()
+
+	assert.NoError(t, err)
+
+	err = queue.Push(MockData{12})
+	assert.NoError(t, err)
+
+	newQueue, err := NewFileQueue("queue-file", &MockDataSerializer{})
+	assert.NoError(t, err)
+
+	assert.Equal(t, newQueue.Size(), queue.Size())
+	fileQueue1 := queue.(*FileQueue)
+	fileQueue2 := newQueue.(*FileQueue)
+	assert.Equal(t, fileQueue1.writer.header.head.offset, fileQueue2.writer.header.head.offset)
+	assert.Equal(t, fileQueue1.writer.header.head.length, fileQueue2.writer.header.head.length)
+	assert.Equal(t, fileQueue1.writer.header.tail.offset, fileQueue2.writer.header.tail.offset)
+	assert.Equal(t, fileQueue1.writer.header.tail.length, fileQueue2.writer.header.tail.length)
+}
+
 func TestCheckCorrupt_WrongVersionNumber(t *testing.T) {
 	queueFile := createTestFile()
 	defer deleteFile(queueFile)

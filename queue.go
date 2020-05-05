@@ -137,14 +137,6 @@ type QueueProtocolWriter struct {
 	header      *header
 }
 
-func (w *QueueProtocolWriter) updateTail(ptr *elementPtr) {
-	if w.header.head.index == 0 {
-		// First time
-		w.header.head.length = ptr.length
-	}
-	w.header.tail = ptr
-}
-
 // Pointer to some data element in the file
 // Each element is identified by it's start position and it's length (in bytes).
 // The elements are written [elementLength,elementData] and the offset points to the first
@@ -265,6 +257,14 @@ func checkCorrupt(file *os.File) (*header, error) {
 	header.tail = &elementPtr{
 		offset: tailOffset,
 		length: 0,
+	}
+	headLength, err := ReadLong(file, headOffset)
+	if err == nil {
+		header.head.length = headLength
+	}
+	tailLength, err := ReadLong(file, tailOffset)
+	if err == nil {
+		header.tail.length = tailLength
 	}
 	return header, nil
 }
