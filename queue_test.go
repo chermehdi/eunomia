@@ -198,6 +198,91 @@ func TestFileQueue_PeekQueue(t *testing.T) {
 	assert.Equal(t, mockData.value, mockDataInstance.value)
 }
 
+func TestFileQueue_PollEmptyQueue(t *testing.T) {
+	queue, err := NewFileQueue("some-queue", &MockDataSerializer{})
+	defer queue.Delete()
+
+	assert.NoError(t, err)
+
+	_, err = queue.Poll()
+	assert.Same(t, EmptyQueueError, err)
+}
+
+func TestFileQueue_PollQueue(t *testing.T) {
+	queue, err := NewFileQueue("some-queue", &MockDataSerializer{})
+	defer queue.Delete()
+
+	assert.NoError(t, err)
+	mockData := MockData{123}
+
+	queue.Push(&mockData)
+
+	el, err := queue.Poll()
+
+	assert.NoError(t, err)
+	mockDataInstance := (el).(MockData)
+	assert.Equal(t, mockData.value, mockDataInstance.value)
+	assert.Equal(t, int64(0), queue.Size())
+}
+
+func TestFileQueue_PollQueueKeepsOrder(t *testing.T) {
+	queue, err := NewFileQueue("some-queue", &MockDataSerializer{})
+	defer queue.Delete()
+
+	assert.NoError(t, err)
+	mockDataFirst := MockData{1}
+	mockDataSecond := MockData{2}
+
+	_ = queue.Push(&mockDataFirst)
+	_ = queue.Push(&mockDataSecond)
+
+	el, err := queue.Poll()
+
+	assert.NoError(t, err)
+	mockDataInstance := (el).(MockData)
+	assert.Equal(t, mockDataFirst.value, mockDataInstance.value)
+	assert.Equal(t, int64(1), queue.Size())
+
+	el, err = queue.Poll()
+
+	assert.NoError(t, err)
+	mockDataInstance = (el).(MockData)
+	assert.Equal(t, mockDataSecond.value, mockDataInstance.value)
+	assert.Equal(t, int64(0), queue.Size())
+}
+
+func TestFileQueue_BulkPushPoll(t *testing.T) {
+	elements := make([]MockData, 0)
+	elementCount := 100
+	for i := 0; i < elementCount; i++ {
+		elements = append(elements, MockData{int32(i)})
+	}
+	queue, err := NewFileQueue("some-queue", &MockDataSerializer{})
+	defer queue.Delete()
+
+	assert.NoError(t, err)
+	for _, element := range elements {
+		assert.NoError(t, queue.Push(element))
+	}
+
+	for i := 0; i < elementCount; i++ {
+		curElement, err := queue.Peek()
+		assert.NoError(t, err)
+
+		curElementCast := (curElement).(MockData)
+		assert.Equal(t, int32(i), curElementCast.value)
+
+		curElement, err = queue.Poll()
+		assert.NoError(t, err)
+		assert.Equal(t, int64(elementCount-i-1), queue.Size())
+
+		curElementCast = (curElement).(MockData)
+		assert.Equal(t, int32(i), curElementCast.value)
+	}
+
+	assert.Equal(t, int64(0), queue.Size())
+}
+
 // tests Utilities
 type MockData struct {
 	value int32
