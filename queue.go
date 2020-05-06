@@ -97,7 +97,40 @@ func (f *FileQueue) Push(element interface{}) error {
 }
 
 func (f *FileQueue) Poll() (interface{}, error) {
-	panic("implement me")
+	if f.Size() == 0 {
+		return nil, EmptyQueueError
+	}
+	head := f.writer.header.head
+	data, err := ReadChunk(f.writer.backingFile, head.offset+8, head.length)
+	if err != nil {
+		return nil, err
+	}
+	element := f.serializer.Read(bytes.NewReader(data))
+	var newHead *elementPtr
+	if f.Size() == 1 {
+		newHead = f.writer.header.tail
+	} else {
+		nextElLength, err := ReadLong(f.writer.backingFile, head.offset+8+head.length)
+		if err != nil {
+			return nil, err
+		}
+		newHead = &elementPtr{
+			offset: head.offset + 8 + head.length,
+			length: nextElLength,
+		}
+	}
+	updatedHeader := &header{
+		head:         newHead,
+		tail:         f.writer.header.tail,
+		elementCount: f.writer.header.elementCount - 1,
+		version:      f.writer.header.version,
+		flags:        f.writer.header.flags,
+	}
+	if err = writeHeader(f.writer.backingFile, updatedHeader); err != nil {
+		return nil, err
+	}
+	f.writer.header = updatedHeader
+	return element, nil
 }
 
 func (f *FileQueue) Peek() (interface{}, error) {
