@@ -8,11 +8,14 @@ import (
 func TestReadWriteInt(t *testing.T) {
 	queueFile := createTestFile()
 	defer deleteFile(queueFile)
-
-	assert.NoError(t, WriteInt(queueFile, 0, 12))
-	assert.NoError(t, WriteInt(queueFile, 4, 42))
-	assert.NoError(t, WriteInt(queueFile, 8, -12))
-	assert.NoError(t, WriteInt(queueFile, 12, int32(1)<<30))
+	currentOffset, err := WriteInt(queueFile, 0, 12)
+	assert.NoError(t, err)
+	currentOffset, err = WriteInt(queueFile, currentOffset, 42)
+	assert.NoError(t, err)
+	currentOffset, err = WriteInt(queueFile, currentOffset, -12)
+	assert.NoError(t, err)
+	currentOffset, err = WriteInt(queueFile, currentOffset, int32(1)<<30)
+	assert.NoError(t, err)
 
 	fileInfo, _ := queueFile.Stat()
 	assert.Equal(t, int64(16), fileInfo.Size())
@@ -38,10 +41,14 @@ func TestReadWriteLong(t *testing.T) {
 	queueFile := createTestFile()
 	defer deleteFile(queueFile)
 
-	assert.NoError(t, WriteLong(queueFile, 0, 12))
-	assert.NoError(t, WriteLong(queueFile, 8, 42))
-	assert.NoError(t, WriteLong(queueFile, 16, -12))
-	assert.NoError(t, WriteLong(queueFile, 24, int64(1)<<60))
+	currentOffset, err := WriteLong(queueFile, 0, 12)
+	assert.NoError(t, err)
+	currentOffset, err = WriteLong(queueFile, currentOffset, 42)
+	assert.NoError(t, err)
+	currentOffset, err = WriteLong(queueFile, currentOffset, -12)
+	assert.NoError(t, err)
+	currentOffset, err = WriteLong(queueFile, currentOffset, int64(1)<<60)
+	assert.NoError(t, err)
 
 	fileInfo, _ := queueFile.Stat()
 	assert.Equal(t, int64(32), fileInfo.Size())
@@ -61,4 +68,39 @@ func TestReadWriteLong(t *testing.T) {
 	val, err = ReadLong(queueFile, 24)
 	assert.NoError(t, err)
 	assert.Equal(t, int64(1)<<60, val)
+}
+
+func TestReadWriteString_EmptyString(t *testing.T) {
+	queueFile := createTestFile()
+	defer deleteFile(queueFile)
+
+	_, err := WriteString(queueFile, 0, "")
+	assert.NoError(t, err)
+	str, err := ReadString(queueFile, 0)
+	assert.NoError(t, err)
+	assert.Equal(t, "", str)
+}
+
+func TestReadWriteString_SimpleString(t *testing.T) {
+	queueFile := createTestFile()
+	defer deleteFile(queueFile)
+
+	targetString := "Hello world!"
+	_, err := WriteString(queueFile, 0, targetString)
+	assert.NoError(t, err)
+	str, err := ReadString(queueFile, 0)
+	assert.NoError(t, err)
+	assert.Equal(t, targetString, str)
+}
+
+func TestReadWriteString_UnicodeString(t *testing.T) {
+	queueFile := createTestFile()
+	defer deleteFile(queueFile)
+
+	targetString := "😇 Hello unicode characters"
+	_, err := WriteString(queueFile, 0, targetString)
+	assert.NoError(t, err)
+	str, err := ReadString(queueFile, 0)
+	assert.NoError(t, err)
+	assert.Equal(t, targetString, str)
 }

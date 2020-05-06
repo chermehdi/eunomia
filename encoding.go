@@ -4,25 +4,58 @@ import (
 	"io"
 )
 
+// TODO(chermehdi): Fix the io.WriterAt and io.ReaderAt not many implementers.
+
+// Write an string at the given offset.
+// Writing a string is equivalent to writing 2 things:
+//     1 - The length of the string			int64          (8 bytes)
+//     2 - The actual bytes of the string   []byte		   (length bytes)
+func WriteString(file io.WriterAt, offset int64, value string) (int64, error) {
+	length := int64(len(value))
+	if _, err := WriteLong(file, offset, length); err != nil {
+		return -1, err
+	}
+	if _, err := WriteChunk(file, offset+8, []byte(value)); err != nil {
+		return -1, err
+	}
+	return offset + length + 8, nil
+}
+
+// Read a string starting at the given offset.
+// Reading a string is equivalent to reading 2 things:
+//     1 - The length of the string			int64          (8 bytes)
+//     2 - The actual bytes of the string   []byte		   (length bytes)
+func ReadString(file io.ReaderAt, offset int64) (string, error) {
+	length, err := ReadLong(file, offset)
+	if err != nil {
+		return "", err
+	}
+	data, err := ReadChunk(file, offset+8, length)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
 // Write an int32 at the given offset.
-func WriteInt(file io.WriterAt, offset int64, value int32) error {
+func WriteInt(file io.WriterAt, offset int64, value int32) (int64, error) {
 	buffer[0] = byte(value >> 24)
 	buffer[1] = byte(value >> 16)
 	buffer[2] = byte(value >> 8)
 	buffer[3] = byte(value)
 	written, err := file.WriteAt(buffer[0:4], offset)
 	if err != nil {
-		return err
+		return -1, err
 	}
 	if written != 4 {
-		return UnexpectedNumberOfWrittenBytesError
+		return -1, UnexpectedNumberOfWrittenBytesError
 	}
-	return nil
+	return offset + 4, nil
 }
 
 // Write an int64 value in the given offset of the file.
 // If the value cannot be written to the file an error is returned.
-func WriteLong(file io.WriterAt, offset int64, value int64) error {
+func WriteLong(file io.WriterAt, offset int64, value int64) (int64, error) {
 	buffer[0] = byte(value >> 56)
 	buffer[1] = byte(value >> 48)
 	buffer[2] = byte(value >> 40)
@@ -33,12 +66,12 @@ func WriteLong(file io.WriterAt, offset int64, value int64) error {
 	buffer[7] = byte(value)
 	written, err := file.WriteAt(buffer[0:8], offset)
 	if err != nil {
-		return err
+		return -1, err
 	}
 	if written != 8 {
-		return UnexpectedNumberOfWrittenBytesError
+		return -1, UnexpectedNumberOfWrittenBytesError
 	}
-	return nil
+	return offset + 8, nil
 }
 
 // Read an int32 at the given offset
@@ -85,28 +118,23 @@ func WriteChunk(file io.WriterAt, offset int64, data []byte) (int, error) {
 // queue file. If an error occurs during writing and error is returned.
 func writeHeader(file io.WriterAt, header *header) error {
 	currentOffset := int64(0)
-	err := WriteInt(file, currentOffset, header.version)
-	currentOffset += 4
+	currentOffset, err := WriteInt(file, currentOffset, header.version)
 	if err != nil {
 		return err
 	}
-	err = WriteInt(file, currentOffset, header.flags)
-	currentOffset += 4
+	currentOffset, err = WriteInt(file, currentOffset, header.flags)
 	if err != nil {
 		return err
 	}
-	err = WriteLong(file, currentOffset, header.elementCount)
-	currentOffset += 8
+	currentOffset, err = WriteLong(file, currentOffset, header.elementCount)
 	if err != nil {
 		return err
 	}
-	err = WriteLong(file, currentOffset, header.head.offset)
-	currentOffset += 8
+	currentOffset, err = WriteLong(file, currentOffset, header.head.offset)
 	if err != nil {
 		return err
 	}
-	err = WriteLong(file, currentOffset, header.tail.offset)
-	currentOffset += 8
+	currentOffset, err = WriteLong(file, currentOffset, header.tail.offset)
 	if err != nil {
 		return err
 	}

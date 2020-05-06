@@ -83,7 +83,7 @@ func (f *FileQueue) Push(element interface{}) error {
 		header.tail.offset = header.tail.offset + header.tail.length + 8
 		header.tail.length = dataLength
 	}
-	if err := WriteLong(f.writer.backingFile, header.tail.offset, dataLength); err != nil {
+	if _, err := WriteLong(f.writer.backingFile, header.tail.offset, dataLength); err != nil {
 		return err
 	}
 	if _, err := WriteChunk(f.writer.backingFile, header.tail.offset+8, data); err != nil {
