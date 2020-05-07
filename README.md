@@ -1,3 +1,5 @@
+![Go](https://github.com/chermehdi/eunomia/workflows/Go/badge.svg?branch=master)
+
 # Eunomia - Lightweight persistent file based queue
 
 - Eunomia is a simple file based queue, that allows you to keep local tasks and continue them
