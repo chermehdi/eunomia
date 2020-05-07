@@ -1,9 +1,13 @@
 package eunomia
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -60,6 +64,81 @@ func BenchmarkFileQueue_Poll_Simple(b *testing.B) {
 	}
 }
 
+func BenchmarkFileQueue_Peek_Complex(b *testing.B) {
+	queue := QueueSetup(ElementCount, func(i int) interface{} {
+		return ComplexStructure{
+			FirstName: "John",
+			LastName:  fmt.Sprintf("Doe %v", i),
+			Address: &Address{
+				StreetName: "Backer street",
+				PostalCode: "AB 123",
+				City:       "London",
+			},
+			Phone: &PhoneNumber{
+				Home: "+44 7911 123456",
+				Work: "44 7911 887676",
+			},
+			Age: i + 10,
+		}
+	}, &ComplexSerializer{})
+	defer queue.Delete()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		optimisationPreventer, _ = queue.Peek()
+	}
+}
+
+func BenchmarkFileQueue_Poll_Complex(b *testing.B) {
+	queue := QueueSetup(b.N, func(i int) interface{} {
+		return ComplexStructure{
+			FirstName: "John",
+			LastName:  fmt.Sprintf("Doe %v", i),
+			Address: &Address{
+				StreetName: "Backer street",
+				PostalCode: "AB 123",
+				City:       "London",
+			},
+			Phone: &PhoneNumber{
+				Home: "+44 7911 123456",
+				Work: "44 7911 887676",
+			},
+			Age: i + 10,
+		}
+	}, &ComplexSerializer{})
+	defer queue.Delete()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		optimisationPreventer, _ = queue.Poll()
+	}
+}
+func BenchmarkFileQueue_Push_Complex(b *testing.B) {
+	queue, _ := NewFileQueue("bench-queue", &ComplexSerializer{})
+	defer queue.Delete()
+
+	b.ResetTimer()
+	complex := ComplexStructure{
+		FirstName: "John",
+		LastName:  "doe",
+		Address: &Address{
+			StreetName: "Backer street",
+			PostalCode: "AB 123",
+			City:       "London",
+		},
+		Phone: &PhoneNumber{
+			Home: "+44 7911 123456",
+			Work: "44 7911 887676",
+		},
+		Age: 26,
+	}
+	for i := 0; i < b.N; i++ {
+		if err := queue.Push(complex); err != nil {
+			panic(err)
+		}
+	}
+}
+
 type Address struct {
 	StreetName string
 	PostalCode string
@@ -83,34 +162,48 @@ type ComplexSerializer struct {
 }
 
 func (c *ComplexSerializer) Write(i interface{}) []byte {
-	tempFile, err := os.Open("file")
-	defer os.Remove("file")
-
+	var buffer bytes.Buffer
+	encoder := json.NewEncoder(&buffer)
+	if err := encoder.Encode(i); err != nil {
+		panic(err)
+	}
+	file, err := os.OpenFile("test-file", os.O_CREATE|os.O_RDWR, 0777)
 	if err != nil {
-		panic(err.Error())
+		panic(file)
 	}
-
-	data, ok := i.(ComplexStructure)
-	if !ok {
-		panic("Unexpected type")
+	defer os.Remove("test-file")
+	_, err = WriteString(file, 0, buffer.String())
+	if err != nil {
+		panic(err)
 	}
-	currOffset := int64(0)
-	currOffset, _ = WriteString(tempFile, currOffset, data.FirstName)
-	currOffset, _ = WriteString(tempFile, currOffset, data.LastName)
-	currOffset, _ = WriteString(tempFile, currOffset, data.Address.City)
-	currOffset, _ = WriteString(tempFile, currOffset, data.Address.PostalCode)
-	currOffset, _ = WriteString(tempFile, currOffset, data.Address.StreetName)
-	currOffset, _ = WriteString(tempFile, currOffset, data.Phone.Home)
-	currOffset, _ = WriteString(tempFile, currOffset, data.Phone.Work)
-	currOffset, _ = WriteInt(tempFile, currOffset, int32(data.Age))
-	result, _ := ioutil.ReadAll(tempFile)
-	return result
+	res, err := ioutil.ReadAll(file)
+	if err != nil {
+		panic(err)
+	}
+	return res
 }
 
 func (c ComplexSerializer) Read(reader io.Reader) interface{} {
-	result := ComplexStructure{}
 	buffer, err := ioutil.ReadAll(reader)
 	if err != nil {
 		panic(err)
 	}
+	if err = ioutil.WriteFile("test-file", buffer, 0777); err != nil {
+		panic(err)
+	}
+	defer os.Remove("test-file")
+	file, err := os.Open("test-file")
+	if err != nil {
+		panic(err)
+	}
+	value, err := ReadString(file, 0)
+	if err != nil {
+		panic(err)
+	}
+	decoder := json.NewDecoder(strings.NewReader(value))
+	result := ComplexStructure{}
+	if err := decoder.Decode(&result); err != nil {
+		panic(err)
+	}
+	return result
 }
