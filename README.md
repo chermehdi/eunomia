@@ -14,9 +14,11 @@ go get https://github.com/chermehdi/eunomia
 - This is the simplest possible example:
 
 ```go
+import "github.com/chermehdi/eunomia"
+
 queue := eunomia.NewQueue("queue-name", serializer)
-queue.Add(serializableStruct)
-queue.Add(serializableStruct)
+queue.Push(serializableStruct)
+queue.Push(serializableStruct)
 
 queueLength := queue.Size() // 2
 element := queue.Peek()
@@ -59,7 +61,7 @@ existing queue files if the version written to the file matches the one in the q
 - `flags`: Gives (potential) additional information on how the format of the queue (bounded, compressed ...)
 - `Element count`: The number of elements currently in the queue.
 - `Head offset`: The index of the head element, it points to the element that will be seen after a call to `Peek`
-- `Tail offset`: The index of the tail element, it points to the last element in the queue, calling `Add` will update the
+- `Tail offset`: The index of the tail element, it points to the last element in the queue, calling `Push` will update the
 tail to point to the next location.
 - Each `QueueElement` is encoded as:
 
@@ -74,4 +76,5 @@ tail to point to the next location.
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 ## Contribution
+
 - You can contribute with creating issues, or solving them by submitting PR's or just by adding feature requests.
