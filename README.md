@@ -9,7 +9,7 @@ even if your process crashes, allowing for safer workloads.
 
 - The usage is pretty straight forward you can start by doing 
 ```
-go get https://github.com/chermehdi/eunomia
+go get github.com/chermehdi/eunomia
 ```
 - This is the simplest possible example:
 
