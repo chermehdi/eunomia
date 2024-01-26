@@ -1,4 +1,4 @@
-module github.com/chrmehdi/eunomia
+module github.com/chermehdi/eunomia
 
 go 1.14
 
